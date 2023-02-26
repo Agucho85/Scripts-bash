@@ -1,0 +1,22 @@
+#!bin/bash
+# Trabajo en desarrollo
+DATABASE="$1"
+user="root"
+host="localhost"
+port="3306"
+protocol="TCP"
+time=$(date +"%m_%d_%Y")
+timestamp=$(printf "%s\n" $time)
+dump="./dump_"$1"_"$timestamp".sql"
+table_to_exclude="log\_%"
+minimized_dump_file="./dump_"$1"_minimized_"$timestamp".sql"
+
+for database in $DATABASE
+do
+    mysqldump --defaults-file=/path-to/.my.cnf -u $user --host=$host --port=3306 --protocol=$protocol --databases  $database --single-transaction > $dump
+done && echo "DUMP $dump finished"
+
+for f in `mysql --defaults-file=/path-to/.my.cnf -u $user --host=$host --port=3306 --protocol=$protocol --databases  $DATABASE -sN -e "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$DATABASE' AND NOT(TABLE_NAME LIKE '$table_to_exclude') "` 
+do 
+    mysqldump --defaults-file=/path-to/.my.cnf -u $user --host=$host --port=3306 --protocol=$protocol --databases  $DATABASE --single-transaction "$f" >> $minimized_dump_file
+done && echo "Minimized_DUMP $dump finished"
