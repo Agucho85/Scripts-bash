@@ -13,15 +13,64 @@ echo "Using temporary directory: $TEMP_DIR"
 
 # Function to clean up
 cleanup() {
-    local exit_code=$?
+    local exit_status=$?
     echo "Cleaning up temporary files..."
-    cd ~
-    rm -rf $TEMP_DIR
-    exit $exit_code
+    cd $HOME
+    if [ -d "$TEMP_DIR" ]; then
+        rm -rf "$TEMP_DIR"
+    fi
+    return $exit_status
 }
 
 # Register the cleanup function
-trap cleanup EXIT
+trap cleanup EXIT ERR
+
+# Function to check if user needs to be added to docker group
+need_docker_group() {
+    if ! groups | grep -q docker; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to start minikube in new session
+start_minikube_session() {
+    echo "Starting new session for Minikube initialization..."
+    
+    # Create a script for the new session
+    cat > $TEMP_DIR/start_minikube.sh << 'EOF'
+#!/bin/bash
+export PATH=$PATH:/usr/local/bin
+echo "Starting Minikube..."
+minikube start --driver=docker --memory=2048 --cpus=2
+if [ $? -eq 0 ]; then
+    echo "Verifying installation..."
+    kubectl get nodes
+    minikube status
+    echo "MINIKUBE_START_SUCCESS=true" > $TEMP_DIR/minikube_status
+else
+    echo "MINIKUBE_START_SUCCESS=false" > $TEMP_DIR/minikube_status
+fi
+EOF
+    
+    chmod +x $TEMP_DIR/start_minikube.sh
+    
+    echo "Starting new session with docker group permissions..."
+    # Run the script as current user but with new group session
+    sudo -u $USER sg docker -c "$TEMP_DIR/start_minikube.sh" 2>&1 | tee $TEMP_DIR/minikube_output.log
+    
+    # Check the result
+    if [ -f "$TEMP_DIR/minikube_status" ]; then
+        source $TEMP_DIR/minikube_status
+        if [ "$MINIKUBE_START_SUCCESS" = "true" ]; then
+            echo "Minikube started successfully!"
+        else
+            echo "Failed to start Minikube. Please check the output above."
+            return 1
+        fi
+    fi
+}
 
 # 1. Update system
 echo "Updating system packages..."
@@ -42,11 +91,8 @@ if ! command -v docker &> /dev/null; then
     sudo usermod -aG docker $USER
     sudo systemctl enable docker
     sudo systemctl start docker
-    newgrp docker << EONG
-    # Verify docker is running
-    echo "Verifying Docker installation..."
-    docker run hello-world
-EONG
+    
+    echo "Docker installed successfully."
 else
     echo "Docker already installed, skipping Docker installation..."
 fi
@@ -66,28 +112,25 @@ if ! command -v minikube &> /dev/null; then
     echo "Installing Minikube..."
     curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-arm64
     sudo install $TEMP_DIR/minikube-linux-arm64 /usr/local/bin/minikube
-    
-    # Start Minikube with resource limits
-    echo "Starting Minikube..."
-    newgrp docker << EONG
-    minikube start --driver=docker --memory=2048 --cpus=2
-EONG
     echo "Minikube installation complete"
+fi
+
+# 6. Start Minikube with proper permissions
+if need_docker_group; then
+    echo "Docker group was just added. Starting new session for Minikube..."
+    start_minikube_session
 else
-    echo "Minikube already installed, checking if it's running..."
+    # Only start minikube if docker group is already active
     if ! minikube status &> /dev/null; then
-        echo "Starting Minikube..."
-        newgrp docker << EONG
+        echo "Starting Minikube in current session..."
         minikube start --driver=docker --memory=2048 --cpus=2
-EONG
+        
+        echo "Verifying installation..."
+        kubectl get nodes
+        minikube status
+    else
+        echo "Minikube is already running"
     fi
 fi
 
-# 6. Final verification
-echo "Verifying installation..."
-newgrp docker << EONG
-kubectl get nodes
-minikube status
-EONG
-
-echo "Installation complete! You can now use Minikube."
+echo "Installation complete!"
